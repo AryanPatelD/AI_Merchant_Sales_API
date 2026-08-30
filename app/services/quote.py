@@ -2,7 +2,9 @@
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from uuid import uuid4
+from uuid import UUID, uuid4
+
+from psycopg.types.json import Jsonb
 
 from app.config import Settings
 from app.database.connection import database_connection
@@ -59,6 +61,10 @@ class QuoteDiscountRuleNotConfiguredError(Exception):
     """Raised when no active rule covers the calculated subtotal."""
 
 
+class QuoteNotFoundError(Exception):
+    """Raised when a persisted quote does not belong to the merchant."""
+
+
 def money(value: Decimal) -> Decimal:
     return value.quantize(MONEY, rounding=ROUND_HALF_UP)
 
@@ -111,7 +117,8 @@ def create_quote(settings: Settings, request: QuoteRequest) -> QuoteResponse:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT p.sku, p.status, p.category, p.price, p.currency,
+                SELECT p.product_id, p.sku, p.name, p.status, p.category,
+                       p.price, p.currency,
                        tr.tax_rate, tr.tax_name,
                        i.inventory_id, i.total_quantity,
                        i.reserved_quantity, m.currency AS merchant_currency,
@@ -208,13 +215,22 @@ def create_quote(settings: Settings, request: QuoteRequest) -> QuoteResponse:
         quoted_items.append(
             QuotedItem(
                 sku=request_item.sku,
+                product_name=row["name"],
                 quantity=request_item.quantity,
                 unit_price=money(row["price"]),
                 line_subtotal=line_subtotal,
                 discount=discount,
+                discount_type=discount_rule["discount_type"],
+                discount_value=discount_rule["discount_value"],
+                discount_rate=(
+                    discount_rule["discount_value"]
+                    if discount_rule["discount_type"] == "PERCENTAGE"
+                    else None
+                ),
                 taxable_amount=taxable,
                 gst_rate=rate,
                 tax=tax,
+                line_total=money(taxable + tax),
             )
         )
         total_discount += discount
@@ -260,8 +276,55 @@ def create_quote(settings: Settings, request: QuoteRequest) -> QuoteResponse:
         explanations.append(f"{kind.value.lower().replace('_', ' ')} shipping is INR {shipping}")
 
     now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=settings.quote_validity_seconds)
+    quote_id = uuid4()
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO quotes (
+                    quote_id, merchant_id, subtotal, discount_amount,
+                    taxable_amount, tax_amount, shipping_amount, total_amount,
+                    currency, shipping_state, shipping_country, shipping_type,
+                    status, created_at, expires_at, pricing_explanation
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    'ACTIVE', %s, %s, %s
+                )
+                """,
+                (
+                    quote_id, settings.merchant_id, subtotal, total_discount,
+                    total_taxable, total_tax, shipping, total,
+                    product_rows[0][1]["merchant_currency"].upper(),
+                    request.shipping_address.state,
+                    request.shipping_address.country,
+                    kind.value, now, expires_at, Jsonb(explanations),
+                ),
+            )
+            for item, (_, row, _) in zip(quoted_items, product_rows, strict=True):
+                cursor.execute(
+                    """
+                    INSERT INTO quote_items (
+                        quote_item_id, quote_id, product_id, sku, product_name,
+                        quantity, unit_price_snapshot, gst_rate_snapshot,
+                        discount_type_snapshot, discount_value_snapshot,
+                        discount_rate_snapshot, line_subtotal, discount_amount,
+                        tax_amount, line_total
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        uuid4(), quote_id, row["product_id"], item.sku,
+                        item.product_name, item.quantity, item.unit_price,
+                        item.gst_rate, item.discount_type, item.discount_value,
+                        item.discount_rate, item.line_subtotal, item.discount,
+                        item.tax, item.line_total,
+                    ),
+                )
+
     return QuoteResponse(
-        quote_id=uuid4(),
+        quote_id=quote_id,
         currency=product_rows[0][1]["merchant_currency"].upper(),
         items=quoted_items,
         pricing=QuotePricing(
@@ -275,6 +338,82 @@ def create_quote(settings: Settings, request: QuoteRequest) -> QuoteResponse:
         shipping_type=kind,
         status=QuoteStatus.ACTIVE,
         valid_for_seconds=settings.quote_validity_seconds,
-        expires_at=now + timedelta(seconds=settings.quote_validity_seconds),
+        created_at=now,
+        expires_at=expires_at,
         pricing_explanation=explanations,
+    )
+
+
+def get_quote(settings: Settings, quote_id: UUID) -> QuoteResponse:
+    """Return stored snapshots and expire an ACTIVE quote when its window elapsed."""
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT quote_id, subtotal, discount_amount, taxable_amount,
+                       tax_amount, shipping_amount, total_amount, currency,
+                       shipping_type, status, created_at, expires_at,
+                       pricing_explanation
+                FROM quotes
+                WHERE quote_id = %s AND merchant_id = %s
+                FOR UPDATE
+                """,
+                (quote_id, settings.merchant_id),
+            )
+            quote = cursor.fetchone()
+            if quote is None:
+                raise QuoteNotFoundError
+
+            now = datetime.now(timezone.utc)
+            expires_at = quote["expires_at"]
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            created_at = quote["created_at"]
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            if quote["status"] == QuoteStatus.ACTIVE.value and expires_at <= now:
+                cursor.execute(
+                    "UPDATE quotes SET status = 'EXPIRED' WHERE quote_id = %s",
+                    (quote_id,),
+                )
+                quote["status"] = QuoteStatus.EXPIRED.value
+
+            cursor.execute(
+                """
+                SELECT sku, product_name, quantity,
+                       unit_price_snapshot AS unit_price,
+                       line_subtotal, discount_amount AS discount,
+                       discount_type_snapshot AS discount_type,
+                       discount_value_snapshot AS discount_value,
+                       discount_rate_snapshot AS discount_rate,
+                       line_subtotal - discount_amount AS taxable_amount,
+                       gst_rate_snapshot AS gst_rate,
+                       tax_amount AS tax, line_total
+                FROM quote_items
+                WHERE quote_id = %s
+                ORDER BY quote_item_id
+                """,
+                (quote_id,),
+            )
+            items = [QuotedItem(**row) for row in cursor.fetchall()]
+
+    validity = max(int((expires_at - created_at).total_seconds()), 1)
+    return QuoteResponse(
+        quote_id=quote["quote_id"],
+        currency=quote["currency"],
+        items=items,
+        pricing=QuotePricing(
+            subtotal=quote["subtotal"],
+            discount=quote["discount_amount"],
+            taxable_amount=quote["taxable_amount"],
+            tax=quote["tax_amount"],
+            shipping=quote["shipping_amount"],
+            total=quote["total_amount"],
+        ),
+        shipping_type=quote["shipping_type"],
+        status=quote["status"],
+        valid_for_seconds=validity,
+        created_at=created_at,
+        expires_at=expires_at,
+        pricing_explanation=quote["pricing_explanation"],
     )

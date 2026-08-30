@@ -1,6 +1,7 @@
 """Quote and pricing routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from uuid import UUID
 
 from app.config import Settings, get_settings
 from app.schemas.discovery import ErrorResponse
@@ -10,11 +11,13 @@ from app.services.quote import (
     QuoteDiscountRuleNotConfiguredError,
     QuoteInsufficientInventoryError,
     QuoteInventoryNotConfiguredError,
+    QuoteNotFoundError,
     QuoteProductInactiveError,
     QuoteProductNotFoundError,
     QuoteShippingRuleNotConfiguredError,
     QuoteTaxRuleNotConfiguredError,
     create_quote,
+    get_quote,
 )
 
 router = APIRouter(prefix="/quote", tags=["Quotes"])
@@ -23,6 +26,7 @@ router = APIRouter(prefix="/quote", tags=["Quotes"])
 @router.post(
     "",
     response_model=QuoteResponse,
+    status_code=status.HTTP_201_CREATED,
     responses={
         status.HTTP_404_NOT_FOUND: {"model": ErrorResponse},
         status.HTTP_409_CONFLICT: {"model": ErrorResponse},
@@ -64,3 +68,20 @@ def quote(
         raise HTTPException(
             503, "Discount rule is not configured for this subtotal"
         ) from error
+
+
+@router.get(
+    "/{quote_id}",
+    response_model=QuoteResponse,
+    responses={status.HTTP_404_NOT_FOUND: {"model": ErrorResponse}},
+    summary="Get a persisted quote snapshot",
+)
+def persisted_quote(
+    quote_id: UUID,
+    settings: Settings = Depends(get_settings),
+) -> QuoteResponse:
+    """Return the original quote snapshot without recalculating catalog prices."""
+    try:
+        return get_quote(settings, quote_id)
+    except QuoteNotFoundError as error:
+        raise HTTPException(404, "Quote was not found") from error

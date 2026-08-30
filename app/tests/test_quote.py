@@ -37,9 +37,13 @@ def test_quote_route_returns_calculated_response(monkeypatch) -> None:
                 "quote_id": "41d189fb-78ab-46ab-b531-c7e8ef84e18e",
                 "currency": "INR",
                 "items": [{
-                    "sku": "TS-MOU-M1", "quantity": 2, "unit_price": "800.00",
+                    "sku": "TS-MOU-M1", "product_name": "Wireless Mouse M1",
+                    "quantity": 2, "unit_price": "800.00",
                     "line_subtotal": "1600.00", "discount": "80.00",
+                    "discount_type": "PERCENTAGE", "discount_value": "5.00",
+                    "discount_rate": "5.00",
                     "taxable_amount": "1520.00", "gst_rate": "18", "tax": "273.60",
+                    "line_total": "1793.60",
                 }],
                 "pricing": {
                     "subtotal": "1600.00", "discount": "80.00",
@@ -48,6 +52,7 @@ def test_quote_route_returns_calculated_response(monkeypatch) -> None:
                 },
                 "shipping_type": "INTER_STATE", "status": "ACTIVE",
                 "valid_for_seconds": 300,
+                "created_at": "2026-08-30T11:55:00Z",
                 "expires_at": "2026-08-30T12:00:00Z",
                 "pricing_explanation": ["Explainable pricing"],
             }
@@ -56,7 +61,7 @@ def test_quote_route_returns_calculated_response(monkeypatch) -> None:
     monkeypatch.setattr("app.api.quote.create_quote", fake_create)
     response = client.post("/api/v1/quote", json=quote_payload())
 
-    assert response.status_code == 200
+    assert response.status_code == 201
     assert response.json()["pricing"]["total"] == "1793.60"
     assert response.json()["status"] == "ACTIVE"
     assert captured["request"].items[0].quantity == 2
@@ -117,10 +122,11 @@ class FakeConnection:
         return self.fake_cursor
 
 
-def test_create_quote_calculates_pricing_and_only_reads_database(monkeypatch) -> None:
+def test_create_quote_calculates_and_persists_snapshots(monkeypatch) -> None:
     cursor = FakeCursor(
         [{
-            "sku": "TS-MOU-M1", "status": "ACTIVE",
+            "product_id": UUID(int=3), "sku": "TS-MOU-M1",
+            "name": "Wireless Mouse M1", "status": "ACTIVE",
             "category": "Computer Accessories", "price": Decimal("800.00"),
             "currency": "INR", "tax_rate": Decimal("18.00"),
             "tax_name": "GST",
@@ -161,10 +167,13 @@ def test_create_quote_calculates_pricing_and_only_reads_database(monkeypatch) ->
     assert result.pricing.shipping == Decimal("0.00")
     assert result.pricing.total == Decimal("1793.60")
     assert result.items[0].unit_price == Decimal("800.00")
+    assert result.items[0].product_name == "Wireless Mouse M1"
+    assert result.items[0].line_total == Decimal("1793.60")
     assert result.shipping_type == "INTER_STATE"
     assert result.valid_for_seconds == 300
-    assert len(cursor.statements) == 2
-    assert all(statement.upper().startswith("SELECT") for statement in cursor.statements)
+    assert len(cursor.statements) == 4
+    assert all(statement.upper().startswith("SELECT") for statement in cursor.statements[:2])
+    assert all(statement.upper().startswith("INSERT") for statement in cursor.statements[2:])
 
 
 def test_shipping_policy() -> None:

@@ -69,13 +69,18 @@ class QuotedItem(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     sku: str
+    product_name: str
     quantity: int = Field(ge=1)
     unit_price: Decimal = Field(ge=0, decimal_places=2)
     line_subtotal: Decimal = Field(ge=0, decimal_places=2)
     discount: Decimal = Field(ge=0, decimal_places=2)
+    discount_type: str
+    discount_value: Decimal = Field(ge=0)
+    discount_rate: Decimal | None = Field(default=None, ge=0, le=100)
     taxable_amount: Decimal = Field(ge=0, decimal_places=2)
     gst_rate: Decimal = Field(ge=0, le=100)
     tax: Decimal = Field(ge=0, decimal_places=2)
+    line_total: Decimal = Field(ge=0, decimal_places=2)
 
 
 class QuotePricing(BaseModel):
@@ -90,7 +95,7 @@ class QuotePricing(BaseModel):
 
 
 class QuoteResponse(BaseModel):
-    """An expiring calculation; persistence is intentionally deferred."""
+    """A persisted, immutable commercial quote snapshot."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -101,5 +106,6 @@ class QuoteResponse(BaseModel):
     shipping_type: ShippingType
     status: QuoteStatus
     valid_for_seconds: int = Field(ge=1)
+    created_at: datetime
     expires_at: datetime
     pricing_explanation: list[str]
