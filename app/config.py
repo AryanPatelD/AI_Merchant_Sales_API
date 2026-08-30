@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     database_url: str
     merchant_id: UUID = UUID("00000000-0000-0000-0000-000000000001")
     merchant_api_version: str = "1.0"
+    quote_validity_seconds: int = Field(default=300, ge=60, le=3600)
     enabled_payment_gateways: list[str] = Field(default_factory=list)
 
 

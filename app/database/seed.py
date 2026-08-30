@@ -45,6 +45,29 @@ PRODUCTS = (
     ("TS-SSD-E1", "Portable SSD 1TB E1", "USB 3.2 portable solid-state drive", "Storage", "TechStore", "6499.00", 12, 2, 4),
 )
 
+SHIPPING_RULES = (
+    ("SAME_STATE", "500.00", "40.00", "0.00"),
+    ("INTER_STATE", "1000.00", "80.00", "0.00"),
+    ("INTERNATIONAL", None, "500.00", "100.00"),
+)
+
+TAX_RULES = (
+    ("Computer Accessories", "18.00"),
+    ("Audio", "18.00"),
+    ("Power and Charging", "18.00"),
+    ("Workspace", "18.00"),
+    ("Storage", "18.00"),
+    ("Electronics", "18.00"),
+    ("Clothing", "12.00"),
+    ("Books", "5.00"),
+)
+
+DISCOUNT_RULES = (
+    ("No Discount", "0.00", "999.99", "PERCENTAGE", "0.00", 1),
+    ("Standard 5%", "1000.00", "4999.99", "PERCENTAGE", "5.00", 1),
+    ("Premium 10%", "5000.00", None, "PERCENTAGE", "10.00", 1),
+)
+
 
 def load_local_env() -> None:
     """Load simple KEY=VALUE entries from .env without overwriting the shell."""
@@ -80,6 +103,7 @@ def seed() -> dict[str, int]:
     merchant_name = os.getenv("MERCHANT_NAME", "TechStore")
     currency = os.getenv("MERCHANT_CURRENCY", "INR")
     country = os.getenv("MERCHANT_COUNTRY", "IN")
+    origin_state = os.getenv("MERCHANT_STATE", "Gujarat")
     api_version = os.getenv("MERCHANT_API_VERSION", "1.0")
 
     with psycopg.connect(database_url()) as connection:
@@ -88,18 +112,19 @@ def seed() -> dict[str, int]:
                 """
                 INSERT INTO merchants (
                     merchant_id, merchant_name, currency, country_code,
-                    api_version, status
+                    api_version, status, origin_state
                 )
-                VALUES (%s, %s, %s, %s, %s, 'ACTIVE')
+                VALUES (%s, %s, %s, %s, %s, 'ACTIVE', %s)
                 ON CONFLICT (merchant_id) DO UPDATE SET
                     merchant_name = EXCLUDED.merchant_name,
                     currency = EXCLUDED.currency,
                     country_code = EXCLUDED.country_code,
                     api_version = EXCLUDED.api_version,
+                    origin_state = EXCLUDED.origin_state,
                     status = 'ACTIVE',
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (merchant_id, merchant_name, currency, country, api_version),
+                (merchant_id, merchant_name, currency, country, api_version, origin_state),
             )
 
             for capability in CAPABILITIES:
@@ -156,6 +181,7 @@ def seed() -> dict[str, int]:
                         currency,
                     ),
                 )
+
                 cursor.execute(
                     """
                     INSERT INTO inventory (
@@ -178,6 +204,73 @@ def seed() -> dict[str, int]:
                     ),
                 )
 
+            for category, tax_rate in TAX_RULES:
+                cursor.execute(
+                    """
+                    INSERT INTO tax_rules (
+                        tax_rule_id, merchant_id, category, tax_name,
+                        tax_rate, country
+                    )
+                    VALUES (%s, %s, %s, 'GST', %s, %s)
+                    ON CONFLICT (merchant_id, category, tax_name, country) DO UPDATE SET
+                        tax_rate = EXCLUDED.tax_rate,
+                        is_active = TRUE,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        stable_id("tax-rule", category), merchant_id,
+                        category, tax_rate, country,
+                    ),
+                )
+
+            for (
+                rule_name, min_subtotal, max_subtotal,
+                discount_type, discount_value, priority,
+            ) in DISCOUNT_RULES:
+                cursor.execute(
+                    """
+                    INSERT INTO discount_rules (
+                        discount_rule_id, merchant_id, rule_name,
+                        min_subtotal, max_subtotal, discount_type,
+                        discount_value, priority
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (merchant_id, rule_name) DO UPDATE SET
+                        min_subtotal = EXCLUDED.min_subtotal,
+                        max_subtotal = EXCLUDED.max_subtotal,
+                        discount_type = EXCLUDED.discount_type,
+                        discount_value = EXCLUDED.discount_value,
+                        priority = EXCLUDED.priority,
+                        is_active = TRUE,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        stable_id("discount-rule", rule_name), merchant_id,
+                        rule_name, min_subtotal, max_subtotal,
+                        discount_type, discount_value, priority,
+                    ),
+                )
+
+            for shipping_type, threshold, base_charge, additional_charge in SHIPPING_RULES:
+                cursor.execute(
+                    """
+                    INSERT INTO merchant_shipping_rules (
+                        shipping_rule_id, merchant_id, shipping_type,
+                        free_shipping_threshold, base_charge,
+                        additional_item_charge
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (merchant_id, shipping_type) DO UPDATE SET
+                        free_shipping_threshold = EXCLUDED.free_shipping_threshold,
+                        base_charge = EXCLUDED.base_charge,
+                        additional_item_charge = EXCLUDED.additional_item_charge,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        stable_id("shipping-rule", shipping_type), merchant_id,
+                        shipping_type, threshold, base_charge, additional_charge,
+                    ),
+                )
             cursor.execute(
                 "SELECT COUNT(*) FROM merchants WHERE merchant_id = %s",
                 (merchant_id,),
@@ -203,12 +296,30 @@ def seed() -> dict[str, int]:
                 (merchant_id,),
             )
             inventory_count = cursor.fetchone()[0]
+            cursor.execute(
+                "SELECT COUNT(*) FROM merchant_shipping_rules WHERE merchant_id = %s",
+                (merchant_id,),
+            )
+            shipping_rule_count = cursor.fetchone()[0]
+            cursor.execute(
+                "SELECT COUNT(*) FROM tax_rules WHERE merchant_id = %s",
+                (merchant_id,),
+            )
+            tax_rule_count = cursor.fetchone()[0]
+            cursor.execute(
+                "SELECT COUNT(*) FROM discount_rules WHERE merchant_id = %s",
+                (merchant_id,),
+            )
+            discount_rule_count = cursor.fetchone()[0]
 
     return {
         "merchants": merchant_count,
         "capabilities": capability_count,
         "products": product_count,
         "inventory": inventory_count,
+        "shipping_rules": shipping_rule_count,
+        "tax_rules": tax_rule_count,
+        "discount_rules": discount_rule_count,
     }
 
 
