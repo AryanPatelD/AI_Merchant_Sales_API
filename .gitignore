@@ -56,3 +56,4 @@ Desktop.ini
 
 # Local tooling and document-review artifacts
 .codex-doc-review/
+.tools/

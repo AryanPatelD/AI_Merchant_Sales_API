@@ -3,7 +3,7 @@
 from functools import lru_cache
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     merchant_api_version: str = "1.0"
     quote_validity_seconds: int = Field(default=300, ge=60, le=3600)
     enabled_payment_gateways: list[str] = Field(default_factory=list)
+    razorpay_key_id: str | None = None
+    razorpay_key_secret: SecretStr | None = None
+    razorpay_webhook_secret: SecretStr | None = None
 
 
 @lru_cache
