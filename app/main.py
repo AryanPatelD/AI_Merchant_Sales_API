@@ -12,6 +12,8 @@ from app.api import (
     quote,
     search,
 )
+from app.config import get_settings
+from app.middleware.security import security_middleware
 
 API_V1_PREFIX = "/api/v1"
 
@@ -20,6 +22,11 @@ app = FastAPI(
     version="1.0.0",
     description="Machine-readable commerce APIs for autonomous AI buyers.",
 )
+
+
+@app.middleware("http")
+async def commerce_infrastructure(request, call_next):
+    return await security_middleware(request, call_next, get_settings())
 
 @app.get("/health")
 def health_check():

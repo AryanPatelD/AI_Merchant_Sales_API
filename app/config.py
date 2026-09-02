@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     razorpay_key_id: str | None = None
     razorpay_key_secret: SecretStr | None = None
     razorpay_webhook_secret: SecretStr | None = None
+    api_auth_enabled: bool = False
+    api_key_pepper: SecretStr | None = None
+    rate_limit_enabled: bool = True
+    rate_limit_requests: int = Field(default=100, ge=1)
+    rate_limit_window_seconds: int = Field(default=60, ge=1)
+    audit_log_enabled: bool = True
 
 
 @lru_cache

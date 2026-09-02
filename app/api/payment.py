@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from app.config import Settings, get_settings
 from app.schemas.discovery import ErrorResponse
 from app.schemas.payment import PaymentRequest, PaymentResponse, WebhookResponse
+from app.services.idempotency import IdempotencyConflictError, run_idempotent
 from app.services.payment import (
     MerchantOrderNotFoundError,
     MerchantOrderStatusError,
@@ -34,10 +35,18 @@ webhook_router = APIRouter(prefix="/webhooks", tags=["Payment Webhooks"])
 )
 def payment_order(
     request: PaymentRequest,
+    idempotency_key: str = Header(..., alias="Idempotency-Key", min_length=1, max_length=255),
     settings: Settings = Depends(get_settings),
 ) -> PaymentResponse:
     try:
-        return create_payment(settings, request.order_id)
+        return run_idempotent(
+            idempotency_key,
+            "/api/v1/payment",
+            PaymentResponse,
+            lambda: create_payment(settings, request.order_id),
+        )
+    except IdempotencyConflictError as error:
+        raise HTTPException(409, "Idempotency key is already in use") from error
     except PaymentConfigurationError as error:
         raise HTTPException(503, "Razorpay credentials are not configured") from error
     except MerchantOrderNotFoundError as error:

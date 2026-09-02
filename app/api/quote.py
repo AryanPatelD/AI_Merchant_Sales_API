@@ -1,6 +1,6 @@
 """Quote and pricing routes."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from uuid import UUID
 
 from app.config import Settings, get_settings
@@ -19,6 +19,7 @@ from app.services.quote import (
     create_quote,
     get_quote,
 )
+from app.services.idempotency import IdempotencyConflictError, run_idempotent
 
 router = APIRouter(prefix="/quote", tags=["Quotes"])
 
@@ -36,11 +37,19 @@ router = APIRouter(prefix="/quote", tags=["Quotes"])
 )
 def quote(
     request: QuoteRequest,
+    idempotency_key: str = Header(..., alias="Idempotency-Key", min_length=1, max_length=255),
     settings: Settings = Depends(get_settings),
 ) -> QuoteResponse:
     """Validate stock and calculate an expiring quote without reserving it."""
     try:
-        return create_quote(settings, request)
+        return run_idempotent(
+            idempotency_key,
+            "/api/v1/quote",
+            QuoteResponse,
+            lambda: create_quote(settings, request),
+        )
+    except IdempotencyConflictError as error:
+        raise HTTPException(409, "Idempotency key is already in use") from error
     except QuoteProductNotFoundError as error:
         raise HTTPException(404, f"Product SKU was not found: {error.sku}") from error
     except QuoteProductInactiveError as error:

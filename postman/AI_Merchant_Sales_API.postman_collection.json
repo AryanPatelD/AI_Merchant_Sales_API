@@ -1,0 +1,89 @@
+{
+  "info": {
+    "name": "AI Merchant Sales API - Full E2E",
+    "description": "Happy-path and required failure checks. Set webhook_secret and, when authentication is enabled, api_key before running.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {"key": "key", "value": "X-API-Key", "type": "string"},
+      {"key": "value", "value": "{{api_key}}", "type": "string"},
+      {"key": "in", "value": "header", "type": "string"}
+    ]
+  },
+  "variable": [
+    {"key": "base_url", "value": "http://127.0.0.1:8001"},
+    {"key": "api_key", "value": ""},
+    {"key": "webhook_secret", "value": "", "type": "secret"},
+    {"key": "sku", "value": "TS-CBL-C2"},
+    {"key": "quantity", "value": "1"},
+    {"key": "quote_id", "value": ""},
+    {"key": "order_id", "value": ""},
+    {"key": "gateway_order_id", "value": ""},
+    {"key": "gateway_payment_id", "value": "pay_postman_test"},
+    {"key": "amount_subunits", "value": ""}
+  ],
+  "item": [
+    {
+      "name": "Happy Path",
+      "item": [
+        {
+          "name": "1. Manifest",
+          "request": {"method": "GET", "auth": {"type": "noauth"}, "url": "{{base_url}}/.well-known/ai-commerce"},
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('manifest is available', () => pm.response.to.have.status(200));", "pm.test('order-status is advertised', () => pm.expect(pm.response.json().capabilities).to.include('order-status'));"], "type": "text/javascript"}}]
+        },
+        {
+          "name": "2. Search",
+          "request": {"method": "GET", "url": "{{base_url}}/api/v1/search?q=USB-C%20Cable"},
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('product found', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().results.length).to.be.above(0); });"], "type": "text/javascript"}}]
+        },
+        {
+          "name": "3. Availability",
+          "request": {"method": "GET", "url": "{{base_url}}/api/v1/availability?sku={{sku}}&quantity={{quantity}}"},
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('requested stock is available', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().requested_quantity_available).to.eql(true); });"], "type": "text/javascript"}}]
+        },
+        {
+          "name": "4. Quote",
+          "request": {"method": "POST", "header": [{"key": "Idempotency-Key", "value": "quote-{{$guid}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"items\": [{\"sku\": \"{{sku}}\", \"quantity\": {{quantity}}}],\n  \"shipping_address\": {\"state\": \"Gujarat\", \"country\": \"India\"}\n}"}, "url": "{{base_url}}/api/v1/quote"},
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('quote created', () => pm.response.to.have.status(201));", "pm.collectionVariables.set('quote_id', pm.response.json().quote_id);"], "type": "text/javascript"}}]
+        },
+        {
+          "name": "5. Checkout",
+          "request": {"method": "POST", "header": [{"key": "Idempotency-Key", "value": "checkout-{{$guid}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"quote_id\": \"{{quote_id}}\",\n  \"buyer\": {\"name\": \"Postman Buyer\", \"email\": \"postman@example.com\"},\n  \"shipping_address\": {\"recipient_name\": \"Postman Buyer\", \"address_line1\": \"Test Address\", \"city\": \"Ahmedabad\", \"state\": \"Gujarat\", \"postal_code\": \"380001\", \"country\": \"India\"}\n}"}, "url": "{{base_url}}/api/v1/checkout"},
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('order created', () => pm.response.to.have.status(201));", "pm.collectionVariables.set('order_id', pm.response.json().order_id);"], "type": "text/javascript"}}]
+        },
+        {
+          "name": "6. Payment",
+          "request": {"method": "POST", "header": [{"key": "Idempotency-Key", "value": "payment-{{$guid}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\"order_id\": \"{{order_id}}\"}"}, "url": "{{base_url}}/api/v1/payment"},
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('Razorpay order created', () => pm.response.to.have.status(201));", "const p=pm.response.json(); pm.collectionVariables.set('gateway_order_id',p.gateway_order_id); pm.collectionVariables.set('amount_subunits',p.amount_subunits);"], "type": "text/javascript"}}]
+        },
+        {
+          "name": "7. Signed Captured Webhook",
+          "event": [
+            {"listen": "prerequest", "script": {"exec": ["const CryptoJS=require('crypto-js');", "const payload={event:'payment.captured',payload:{payment:{entity:{id:pm.collectionVariables.get('gateway_payment_id'),order_id:pm.collectionVariables.get('gateway_order_id'),amount:Number(pm.collectionVariables.get('amount_subunits')),currency:'INR'}}}};", "const body=JSON.stringify(payload); pm.collectionVariables.set('webhook_body',body); pm.collectionVariables.set('webhook_signature',CryptoJS.HmacSHA256(body,pm.collectionVariables.get('webhook_secret')).toString());"], "type": "text/javascript"}},
+            {"listen": "test", "script": {"exec": ["pm.test('webhook processed', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().processing_status).to.eql('PROCESSED'); });"], "type": "text/javascript"}}
+          ],
+          "request": {"method": "POST", "auth": {"type": "noauth"}, "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "X-Razorpay-Signature", "value": "{{webhook_signature}}"}, {"key": "X-Razorpay-Event-Id", "value": "postman-captured-{{$guid}}"}], "body": {"mode": "raw", "raw": "{{webhook_body}}"}, "url": "{{base_url}}/webhooks/razorpay"}
+        },
+        {
+          "name": "8. Order Status",
+          "request": {"method": "GET", "url": "{{base_url}}/api/v1/order-status?order_id={{order_id}}"},
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('order is paid and payment captured', () => { pm.response.to.have.status(200); const s=pm.response.json(); pm.expect(s.order_status).to.eql('PAID'); pm.expect(s.payment_status).to.eql('CAPTURED'); });"], "type": "text/javascript"}}]
+        }
+      ]
+    },
+    {
+      "name": "Required Failure Checks",
+      "item": [
+        {"name": "Out of Stock - Availability False", "request": {"method": "GET", "url": "{{base_url}}/api/v1/availability?sku={{sku}}&quantity=1000000"}, "event": [{"listen": "test", "script": {"exec": ["pm.test('availability is false', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().requested_quantity_available).to.eql(false); });"], "type": "text/javascript"}}]},
+        {"name": "Out of Stock - Quote Rejected", "request": {"method": "POST", "header": [{"key": "Idempotency-Key", "value": "oos-{{$guid}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\"items\":[{\"sku\":\"{{sku}}\",\"quantity\":1000}],\"shipping_address\":{\"state\":\"Gujarat\",\"country\":\"India\"}}"}, "url": "{{base_url}}/api/v1/quote"}, "event": [{"listen": "test", "script": {"exec": ["pm.test('quote rejected', () => pm.response.to.have.status(409));"], "type": "text/javascript"}}]},
+        {"name": "Duplicate Checkout", "request": {"method": "POST", "header": [{"key": "Idempotency-Key", "value": "{{duplicate_checkout_key}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\"quote_id\":\"{{duplicate_quote_id}}\",\"buyer\":{\"name\":\"Postman Buyer\",\"email\":\"postman@example.com\"},\"shipping_address\":{\"recipient_name\":\"Postman Buyer\",\"address_line1\":\"Test\",\"city\":\"Ahmedabad\",\"state\":\"Gujarat\",\"postal_code\":\"380001\",\"country\":\"India\"}}"}, "url": "{{base_url}}/api/v1/checkout", "description": "Run twice with the same duplicate_quote_id and duplicate_checkout_key; both responses must contain the same order_id."}},
+        {"name": "Duplicate Webhook", "request": {"method": "POST", "auth": {"type": "noauth"}, "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "X-Razorpay-Signature", "value": "{{webhook_signature}}"}, {"key": "X-Razorpay-Event-Id", "value": "{{duplicate_event_id}}"}], "body": {"mode": "raw", "raw": "{{webhook_body}}"}, "url": "{{base_url}}/webhooks/razorpay", "description": "Run twice with the same duplicate_event_id; the second response must return duplicate=true."}},
+        {"name": "Invalid Razorpay Signature", "request": {"method": "POST", "auth": {"type": "noauth"}, "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "X-Razorpay-Signature", "value": "invalid"}, {"key": "X-Razorpay-Event-Id", "value": "invalid-{{$guid}}"}], "body": {"mode": "raw", "raw": "{\"event\":\"payment.captured\"}"}, "url": "{{base_url}}/webhooks/razorpay"}, "event": [{"listen": "test", "script": {"exec": ["pm.test('invalid signature rejected', () => pm.response.to.have.status(401));"], "type": "text/javascript"}}]},
+        {"name": "Expired Quote", "request": {"method": "POST", "header": [{"key": "Idempotency-Key", "value": "expired-{{$guid}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\"quote_id\":\"{{expired_quote_id}}\",\"buyer\":{\"name\":\"Postman Buyer\",\"email\":\"postman@example.com\"},\"shipping_address\":{\"recipient_name\":\"Postman Buyer\",\"address_line1\":\"Test\",\"city\":\"Ahmedabad\",\"state\":\"Gujarat\",\"postal_code\":\"380001\",\"country\":\"India\"}}"}, "url": "{{base_url}}/api/v1/checkout", "description": "Set expired_quote_id to an expired quote; expected HTTP 409."}, "event": [{"listen": "test", "script": {"exec": ["pm.test('expired quote rejected', () => pm.response.to.have.status(409));"], "type": "text/javascript"}}]},
+        {"name": "Payment Failed Status", "request": {"method": "GET", "url": "{{base_url}}/api/v1/order-status?order_id={{failed_order_id}}", "description": "After a signed payment.failed webhook, set failed_order_id and verify both states."}, "event": [{"listen": "test", "script": {"exec": ["pm.test('failure is reconciled', () => { pm.response.to.have.status(200); const s=pm.response.json(); pm.expect(s.order_status).to.eql('PAYMENT_FAILED'); pm.expect(s.payment_status).to.eql('FAILED'); });"], "type": "text/javascript"}}]}
+      ]
+    }
+  ]
+}

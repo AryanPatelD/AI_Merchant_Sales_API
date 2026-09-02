@@ -18,6 +18,15 @@ from app.services.quote import (
 )
 
 client = TestClient(app)
+IDEMPOTENCY_HEADERS = {"Idempotency-Key": "quote-test-key"}
+
+
+@pytest.fixture(autouse=True)
+def bypass_idempotency_storage(monkeypatch):
+    monkeypatch.setattr(
+        "app.api.quote.run_idempotent",
+        lambda key, endpoint, response_type, operation: operation(),
+    )
 
 
 def quote_payload() -> dict:
@@ -59,12 +68,17 @@ def test_quote_route_returns_calculated_response(monkeypatch) -> None:
         )
 
     monkeypatch.setattr("app.api.quote.create_quote", fake_create)
-    response = client.post("/api/v1/quote", json=quote_payload())
+    response = client.post("/api/v1/quote", json=quote_payload(), headers=IDEMPOTENCY_HEADERS)
 
     assert response.status_code == 201
     assert response.json()["pricing"]["total"] == "1793.60"
     assert response.json()["status"] == "ACTIVE"
     assert captured["request"].items[0].quantity == 2
+
+
+def test_quote_requires_idempotency_key() -> None:
+    response = client.post("/api/v1/quote", json=quote_payload())
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(
@@ -85,7 +99,7 @@ def test_quote_maps_insufficient_inventory(monkeypatch) -> None:
         raise QuoteInsufficientInventoryError("TS-MOU-M1", 50, 36)
 
     monkeypatch.setattr("app.api.quote.create_quote", fail)
-    response = client.post("/api/v1/quote", json=quote_payload())
+    response = client.post("/api/v1/quote", json=quote_payload(), headers=IDEMPOTENCY_HEADERS)
     assert response.status_code == 409
     assert response.json() == {
         "detail": "Insufficient inventory for TS-MOU-M1: requested 50, available 36"

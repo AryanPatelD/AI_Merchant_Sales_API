@@ -24,6 +24,15 @@ from app.services.payment import (
 
 client = TestClient(app)
 ORDER_ID = "e939539f-29c2-4eb8-b796-5a568341ed21"
+IDEMPOTENCY_HEADERS = {"Idempotency-Key": "payment-test-key"}
+
+
+@pytest.fixture(autouse=True)
+def bypass_idempotency_storage(monkeypatch):
+    monkeypatch.setattr(
+        "app.api.payment.run_idempotent",
+        lambda key, endpoint, response_type, operation: operation(),
+    )
 
 
 def test_amount_to_subunits() -> None:
@@ -86,10 +95,15 @@ def test_payment_route(monkeypatch) -> None:
         )
 
     monkeypatch.setattr("app.api.payment.create_payment", fake_create)
-    response = client.post("/api/v1/payment", json={"order_id": ORDER_ID})
+    response = client.post("/api/v1/payment", json={"order_id": ORDER_ID}, headers=IDEMPOTENCY_HEADERS)
     assert response.status_code == 201
     assert response.json()["gateway_order_id"] == "order_test123"
     assert response.json()["key_id"] == "rzp_test_public"
+
+
+def test_payment_requires_idempotency_key() -> None:
+    response = client.post("/api/v1/payment", json={"order_id": ORDER_ID})
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(
@@ -106,7 +120,7 @@ def test_payment_route_errors(monkeypatch, error, status_code) -> None:
         raise error
 
     monkeypatch.setattr("app.api.payment.create_payment", fail)
-    response = client.post("/api/v1/payment", json={"order_id": ORDER_ID})
+    response = client.post("/api/v1/payment", json={"order_id": ORDER_ID}, headers=IDEMPOTENCY_HEADERS)
     assert response.status_code == status_code
 
 
