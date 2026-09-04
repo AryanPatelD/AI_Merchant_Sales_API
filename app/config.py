@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     rate_limit_requests: int = Field(default=100, ge=1)
     rate_limit_window_seconds: int = Field(default=60, ge=1)
     audit_log_enabled: bool = True
+    cors_origins: list[str] = Field(default_factory=list)
 
 
 @lru_cache

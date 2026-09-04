@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
     availability,
@@ -16,12 +17,22 @@ from app.config import get_settings
 from app.middleware.security import security_middleware
 
 API_V1_PREFIX = "/api/v1"
+settings = get_settings()
 
 app = FastAPI(
     title="AI Merchant Sales API",
     version="1.0.0",
     description="Machine-readable commerce APIs for autonomous AI buyers.",
 )
+
+if settings.cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @app.middleware("http")
